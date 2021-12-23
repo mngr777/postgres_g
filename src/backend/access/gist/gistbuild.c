@@ -122,6 +122,7 @@ typedef struct GistSortedBuildPageState
 {
 	Page		pages[8];
 	int current_page;
+	BlockNumber prevpage_blkno;
 	struct GistSortedBuildPageState *parent;	/* Upper level, if any */
 } GistSortedBuildPageState;
 
@@ -516,17 +517,30 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 	oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
 
 	itvec = gistextractpage(pagestate->pages[0], &vect_len);
-	for (int i = 1; i < pagestate->current_page + 1; i++)
+	if (pagestate->current_page > 0)
 	{
-		int len_local;
-		IndexTuple *itvec_local = gistextractpage(pagestate->pages[i], &len_local);
-		itvec = gistjoinvector(itvec, &vect_len, itvec_local, len_local);
-	}
-	pagestate->current_page = 0;
+		for (int i = 1; i < pagestate->current_page + 1; i++)
+		{
+			int len_local;
+			IndexTuple *itvec_local = gistextractpage(pagestate->pages[i], &len_local);
+			itvec = gistjoinvector(itvec, &vect_len, itvec_local, len_local);
+		}
 
-	dist = gistSplit(state->indexrel, pagestate->pages[0], itvec, vect_len, state->giststate);
+		dist = gistSplit(state->indexrel, pagestate->pages[0], itvec, vect_len, state->giststate);
+	}
+	else
+	{
+		dist = (SplitedPageLayout*) palloc0(sizeof(SplitedPageLayout));
+		union_tuple = gistunion(state->indexrel, itvec, vect_len,
+							state->giststate);
+		dist->itup = union_tuple;
+		dist->list = gistfillitupvec(itvec, vect_len, &(dist->lenlist));
+		dist->block.num = vect_len;
+	}
 
 	MemoryContextSwitchTo(oldCtx);
+
+	pagestate->current_page = 0;
 
 	for (;dist != NULL; dist = dist->next)
 	{
@@ -559,16 +573,6 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 		ItemPointerSetBlockNumber(&(union_tuple->t_tid), blkno);
 
 		/*
-		* Form a downlink tuple to represent all the tuples on the page.
-		*/
-		/*oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
-		itvec = gistextractpage(pagestate->page, &vect_len);
-		union_tuple = gistunion(state->indexrel, itvec, vect_len,
-								state->giststate);
-		ItemPointerSetBlockNumber(&(union_tuple->t_tid), blkno);
-		MemoryContextSwitchTo(oldCtx);*/
-
-		/*
 		* Insert the downlink to the parent page. If this was the root, create a
 		* new page as the parent, which becomes the new root.
 		*/
@@ -595,7 +599,9 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 		* right-links form a chain through all the pages in the same level, the
 		* order doesn't matter.
 		*/
-		//GistPageGetOpaque(pagestate->page)->rightlink = blkno; TODO
+		if (pagestate->prevpage_blkno)
+			GistPageGetOpaque(target)->rightlink = pagestate->prevpage_blkno;
+		pagestate->prevpage_blkno = blkno;
 	}
 }
 
