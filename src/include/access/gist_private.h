@@ -88,6 +88,7 @@ typedef struct GISTSTATE
 	FmgrInfo	compressFn[INDEX_MAX_KEYS];
 	FmgrInfo	decompressFn[INDEX_MAX_KEYS];
 	FmgrInfo	penaltyFn[INDEX_MAX_KEYS];
+	FmgrInfo	choosesubtreeFn[INDEX_MAX_KEYS];
 	FmgrInfo	picksplitFn[INDEX_MAX_KEYS];
 	FmgrInfo	equalFn[INDEX_MAX_KEYS];
 	FmgrInfo	distanceFn[INDEX_MAX_KEYS];

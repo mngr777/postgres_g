@@ -1574,6 +1574,9 @@ initGISTstate(Relation index)
 		fmgr_info_copy(&(giststate->equalFn[i]),
 					   index_getprocinfo(index, i + 1, GIST_EQUAL_PROC),
 					   scanCxt);
+		fmgr_info_copy(&(giststate->choosesubtreeFn[i]),
+					   index_getprocinfo(index, i + 1, GIST_CHOOSESUBTREE_PROC),
+					   scanCxt);
 
 		/* opclasses are not required to provide a Distance method */
 		if (OidIsValid(index_getprocid(index, i + 1, GIST_DISTANCE_PROC)))
@@ -1611,6 +1614,7 @@ initGISTstate(Relation index)
 	/* No opclass information for INCLUDE attributes */
 	for (; i < index->rd_att->natts; i++)
 	{
+		giststate->choosesubtreeFn[i].fn_oid = InvalidOid;
 		giststate->consistentFn[i].fn_oid = InvalidOid;
 		giststate->unionFn[i].fn_oid = InvalidOid;
 		giststate->compressFn[i].fn_oid = InvalidOid;
