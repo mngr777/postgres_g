@@ -599,9 +599,11 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 		* right-links form a chain through all the pages in the same level, the
 		* order doesn't matter.
 		*/
+		/*
 		if (pagestate->prevpage_blkno)
 			GistPageGetOpaque(target)->rightlink = pagestate->prevpage_blkno;
 		pagestate->prevpage_blkno = blkno;
+		*/
 	}
 }
 
