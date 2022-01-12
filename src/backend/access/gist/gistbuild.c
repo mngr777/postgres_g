@@ -59,6 +59,11 @@
  */
 #define BUFFERING_MODE_TUPLE_SIZE_STATS_TARGET 4096
 
+/**
+ * Number of pages to collect during sorted build before applying split operation
+ */
+int GistSortedBuildPageBufferSize = 8;
+
 /*
  * Strategy used to build the index. It can change between the
  * GIST_BUFFERING_* modes on the fly, but if the Sorted method is used,
@@ -120,11 +125,24 @@ typedef struct
  */
 typedef struct GistSortedBuildPageState
 {
-	Page		pages[8];
 	int current_page;
 	BlockNumber prevpage_blkno;
 	struct GistSortedBuildPageState *parent;	/* Upper level, if any */
+	uint16 item_num_total;
+	Size page_max_num;
+	Page pages[FLEXIBLE_ARRAY_MEMBER];
 } GistSortedBuildPageState;
+
+static const uint16 GistSortedBuildPageStateMaxItemNum = -2;
+
+#define GistSortedBuildPageStateIsMaxItemNum(pagestate) \
+	(pagestate->item_num_total == GistSortedBuildPageStateMaxItemNum)
+
+#define GistSortedBuildPageStateSize(page_max_num) \
+( \
+    AssertMacro(page_max_num > 0), \
+	(offsetof(GistSortedBuildPageState, pages) + page_max_num * sizeof(Page)) \
+)
 
 /* prototypes for private functions */
 
@@ -401,6 +419,7 @@ gist_indexsortbuild(GISTBuildState *state)
 	GistSortedBuildPageState *leafstate;
 	GistSortedBuildPageState *pagestate;
 	Page		page;
+	Size page_max_num;
 
 	state->pages_allocated = 0;
 	state->pages_written = 0;
@@ -417,7 +436,10 @@ gist_indexsortbuild(GISTBuildState *state)
 	state->pages_written++;
 
 	/* Allocate a temporary buffer for the first leaf page. */
-	leafstate = palloc0(sizeof(GistSortedBuildPageState));
+	page_max_num = GistSortedBuildPageBufferSize;
+	leafstate = palloc0(GistSortedBuildPageStateSize(page_max_num));
+	leafstate->item_num_total = 0;
+	leafstate->page_max_num = page_max_num;
 	leafstate->pages[0] = page;
 	leafstate->parent = NULL;
 	gistinitpage(page, F_LEAF);
@@ -443,7 +465,7 @@ gist_indexsortbuild(GISTBuildState *state)
 
 		gist_indexsortbuild_pagestate_flush(state, pagestate);
 		parent = pagestate->parent;
-		for (int i = 0; i < 8; i++)
+		for (Size i = 0; i < pagestate->page_max_num; i++)
 			if (pagestate->pages[i])
 				pfree(pagestate->pages[i]);
 		pfree(pagestate);
@@ -478,16 +500,20 @@ gist_indexsortbuild_pagestate_add(GISTBuildState *state,
 
 	/* Does the tuple fit? If not, flush */
 	sizeNeeded = IndexTupleSize(itup) + sizeof(ItemIdData) + state->freespace;
-	if (PageGetFreeSpace(pagestate->pages[pagestate->current_page]) < sizeNeeded)
+	if (GistSortedBuildPageStateIsMaxItemNum(pagestate)
+		|| PageGetFreeSpace(pagestate->pages[pagestate->current_page]) < sizeNeeded)
 	{
 		Page newPage;
 		Page old_page = pagestate->pages[pagestate->current_page];
 		uint16 old_page_flags = GistPageGetOpaque(old_page)->flags;
-		if (pagestate->current_page + 1 == 8)
+		if (GistSortedBuildPageStateIsMaxItemNum(pagestate)
+			|| pagestate->current_page + 1 == pagestate->page_max_num)
+		{
 			gist_indexsortbuild_pagestate_flush(state, pagestate);
+		}
 		else
 			pagestate->current_page++;
-		
+
 		if (pagestate->pages[pagestate->current_page] == NULL)
 			pagestate->pages[pagestate->current_page] = palloc(BLCKSZ);
 
@@ -495,6 +521,8 @@ gist_indexsortbuild_pagestate_add(GISTBuildState *state,
 		gistinitpage(newPage, old_page_flags);
 	}
 
+	Assert(!GistSortedBuildPageStateIsMaxItemNum(pagestate));
+	pagestate->item_num_total++;
 	gistfillbuffer(pagestate->pages[pagestate->current_page], &itup, 1, InvalidOffsetNumber);
 }
 
@@ -524,6 +552,7 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 			int len_local;
 			IndexTuple *itvec_local = gistextractpage(pagestate->pages[i], &len_local);
 			itvec = gistjoinvector(itvec, &vect_len, itvec_local, len_local);
+			pfree(itvec_local);
 		}
 
 		dist = gistSplit(state->indexrel, pagestate->pages[0], itvec, vect_len, state->giststate);
@@ -541,6 +570,7 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 	MemoryContextSwitchTo(oldCtx);
 
 	pagestate->current_page = 0;
+	pagestate->item_num_total = 0;
 
 	for (;dist != NULL; dist = dist->next)
 	{
@@ -594,7 +624,9 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 		parent = pagestate->parent;
 		if (parent == NULL)
 		{
-			parent = palloc0(sizeof(GistSortedBuildPageState));
+			parent = palloc0(GistSortedBuildPageStateSize(pagestate->page_max_num));
+			parent->item_num_total = 0;
+			parent->page_max_num = pagestate->page_max_num;
 			parent->pages[0] = (Page) palloc(BLCKSZ);
 			parent->parent = NULL;
 			gistinitpage(parent->pages[0], 0);
