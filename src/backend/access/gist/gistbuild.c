@@ -133,12 +133,18 @@ typedef struct GistSortedBuildPageState
 	Page pages[FLEXIBLE_ARRAY_MEMBER];
 } GistSortedBuildPageState;
 
-static const uint16 GistSortedBuildPageStateMaxItemNum = -2;
+/*
+ * Max. number of items to apply gistSplit to is limited by OffsetNumber type
+ * used in GIST_SPLITVEC.
+ * Using -2 prevents overflowing when iterating over items with
+ * OffsetNumberNext.
+ */
+static const OffsetNumber GistSortedBuildPageStateMaxItemNum = -2;
 
 #define GistSortedBuildPageStateIsMaxItemNum(pagestate) \
 	(pagestate->item_num_total == GistSortedBuildPageStateMaxItemNum)
 
-#define GistSortedBuildPageStateSize(page_max_num) \
+#define GistSortedBuildPageStateRequiredSize(page_max_num) \
 ( \
     AssertMacro(page_max_num > 0), \
 	(offsetof(GistSortedBuildPageState, pages) + page_max_num * sizeof(Page)) \
@@ -421,6 +427,11 @@ gist_indexsortbuild(GISTBuildState *state)
 	Page		page;
 	Size page_max_num;
 
+	/* Number of pages to collect before splitting */
+	page_max_num = GistSortedBuildPageBufferSize;
+	if (page_max_num > 1)
+		state->freespace = 0; /* collected tuples will all be split between new pages */
+
 	state->pages_allocated = 0;
 	state->pages_written = 0;
 	state->ready_num_pages = 0;
@@ -436,8 +447,7 @@ gist_indexsortbuild(GISTBuildState *state)
 	state->pages_written++;
 
 	/* Allocate a temporary buffer for the first leaf page. */
-	page_max_num = GistSortedBuildPageBufferSize;
-	leafstate = palloc0(GistSortedBuildPageStateSize(page_max_num));
+	leafstate = palloc0(GistSortedBuildPageStateRequiredSize(page_max_num));
 	leafstate->item_num_total = 0;
 	leafstate->page_max_num = page_max_num;
 	leafstate->pages[0] = page;
@@ -624,7 +634,7 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 		parent = pagestate->parent;
 		if (parent == NULL)
 		{
-			parent = palloc0(GistSortedBuildPageStateSize(pagestate->page_max_num));
+			parent = palloc0(GistSortedBuildPageStateRequiredSize(pagestate->page_max_num));
 			parent->item_num_total = 0;
 			parent->page_max_num = pagestate->page_max_num;
 			parent->pages[0] = (Page) palloc(BLCKSZ);
