@@ -122,6 +122,10 @@ typedef struct
  * In sorted build, we use a stack of these structs, one for each level,
  * to hold an in-memory buffer of the rightmost page at the level. When the
  * page fills up, it is written out and a new page is allocated.
+ *
+ * Sorting GiST build requires good linearization of the sort opclass. This is
+ * not always the case in multidimensional data. To fight the anomalies, we
+ * buffer and apply picksplit that can be multidimension-aware.
  */
 typedef struct GistSortedBuildPageState
 {
@@ -136,13 +140,9 @@ typedef struct GistSortedBuildPageState
 /*
  * Max. number of items to apply gistSplit to is limited by OffsetNumber type
  * used in GIST_SPLITVEC.
- * Using -2 prevents overflowing when iterating over items with
- * OffsetNumberNext.
  */
-static const OffsetNumber GistSortedBuildPageStateMaxItemNum = -2;
-
 #define GistSortedBuildPageStateIsMaxItemNum(pagestate) \
-	(pagestate->item_num_total == GistSortedBuildPageStateMaxItemNum)
+	(pagestate->item_num_total + 1 == PG_UINT16_MAX)
 
 #define GistSortedBuildPageStateRequiredSize(page_max_num) \
 ( \
@@ -467,6 +467,7 @@ gist_indexsortbuild(GISTBuildState *state)
 	 * Write out the partially full non-root pages.
 	 *
 	 * Keep in mind that flush can build a new root.
+	 * If number of pages is > 1 then new root is required.
 	 */
 	pagestate = leafstate;
 	while (pagestate->parent != NULL || pagestate->current_page != 0)
@@ -508,7 +509,10 @@ gist_indexsortbuild_pagestate_add(GISTBuildState *state,
 {
 	Size		sizeNeeded;
 
-	/* Does the tuple fit? If not, flush */
+	/* Does the tuple fit?
+	 * Tuple fits if total number of tuples is less than GistSortedBuildPageStateMaxItemNum
+	 * and tuple fits into current page or new page can be added.
+	 * If not, flush */
 	sizeNeeded = IndexTupleSize(itup) + sizeof(ItemIdData) + state->freespace;
 	if (GistSortedBuildPageStateIsMaxItemNum(pagestate)
 		|| PageGetFreeSpace(pagestate->pages[pagestate->current_page]) < sizeNeeded)
@@ -554,9 +558,11 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 
 	oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
 
+	/* Get index tuples from first page */
 	itvec = gistextractpage(pagestate->pages[0], &vect_len);
 	if (pagestate->current_page > 0)
 	{
+		/* Append tuples from each page */
 		for (int i = 1; i < pagestate->current_page + 1; i++)
 		{
 			int len_local;
@@ -565,10 +571,12 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 			pfree(itvec_local);
 		}
 
+		/* Apply picksplit to list of all collected tuples */
 		dist = gistSplit(state->indexrel, pagestate->pages[0], itvec, vect_len, state->giststate);
 	}
 	else
 	{
+		/* Create splitted layout from single page */
 		dist = (SplitedPageLayout*) palloc0(sizeof(SplitedPageLayout));
 		union_tuple = gistunion(state->indexrel, itvec, vect_len,
 							state->giststate);
@@ -579,11 +587,14 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 
 	MemoryContextSwitchTo(oldCtx);
 
+	/* Reset page and item counters */
 	pagestate->current_page = 0;
 	pagestate->item_num_total = 0;
 
+	/* Create pages for all partitions in split result */
 	for (;dist != NULL; dist = dist->next)
 	{
+		/* Create page and copy data */
 		char *data = (char *) (dist->list);
 		Page target = palloc0(BLCKSZ);
 		gistinitpage(target, isleaf? F_LEAF:0);
