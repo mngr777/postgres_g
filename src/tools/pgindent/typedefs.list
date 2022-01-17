@@ -969,7 +969,7 @@ GistHstoreOptions
 GistInetKey
 GistNSN
 GistOptBufferingMode
-GistSortedBuildPageState
+GistSortedBuildPageBatch
 GistSplitUnion
 GistSplitVector
 GistTsVectorOptions

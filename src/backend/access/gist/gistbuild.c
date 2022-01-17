@@ -120,34 +120,33 @@ typedef struct
 
 /*
  * In sorted build, we use a stack of these structs, one for each level,
- * to hold an in-memory buffer of the rightmost page at the level. When the
- * page fills up, it is written out and a new page is allocated.
+ * to hold an in-memory buffer of last pages at the level.
  *
  * Sorting GiST build requires good linearization of the sort opclass. This is
  * not always the case in multidimensional data. To fight the anomalies, we
- * buffer and apply picksplit that can be multidimension-aware.
+ * buffer index tuples and apply picksplit that can be multidimension-aware.
  */
-typedef struct GistSortedBuildPageState
+typedef struct GistSortedBuildPageBatch
 {
 	int current_page;
-	BlockNumber prevpage_blkno;
-	struct GistSortedBuildPageState *parent;	/* Upper level, if any */
+	BlockNumber last_blkno;
+	struct GistSortedBuildPageBatch *parent;	/* Upper level, if any */
 	uint16 item_num_total;
 	Size page_max_num;
 	Page pages[FLEXIBLE_ARRAY_MEMBER];
-} GistSortedBuildPageState;
+} GistSortedBuildPageBatch;
 
 /*
  * Max. number of items to apply gistSplit to is limited by OffsetNumber type
  * used in GIST_SPLITVEC.
  */
-#define GistSortedBuildPageStateIsMaxItemNum(pagestate) \
-	(pagestate->item_num_total + 1 == PG_UINT16_MAX)
+#define GistSortedBuildPageBatchIsMaxItemNum(pagebatch) \
+	(pagebatch->item_num_total + 1 == PG_UINT16_MAX)
 
-#define GistSortedBuildPageStateRequiredSize(page_max_num) \
+#define GistSortedBuildPageBatchRequiredSize(page_max_num) \
 ( \
     AssertMacro(page_max_num > 0), \
-	(offsetof(GistSortedBuildPageState, pages) + page_max_num * sizeof(Page)) \
+	(offsetof(GistSortedBuildPageBatch, pages) + page_max_num * sizeof(Page)) \
 )
 
 /* prototypes for private functions */
@@ -156,11 +155,11 @@ static void gistSortedBuildCallback(Relation index, ItemPointer tid,
 									Datum *values, bool *isnull,
 									bool tupleIsAlive, void *state);
 static void gist_indexsortbuild(GISTBuildState *state);
-static void gist_indexsortbuild_pagestate_add(GISTBuildState *state,
-											  GistSortedBuildPageState *pagestate,
+static void gist_indexsortbuild_pagebatch_add(GISTBuildState *state,
+											  GistSortedBuildPageBatch *pagebatch,
 											  IndexTuple itup);
-static void gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
-												GistSortedBuildPageState *pagestate);
+static void gist_indexsortbuild_pagebatch_flush(GISTBuildState *state,
+												GistSortedBuildPageBatch *pagebatch);
 static void gist_indexsortbuild_flush_ready_pages(GISTBuildState *state);
 
 static void gistInitBuffering(GISTBuildState *buildstate);
@@ -422,8 +421,7 @@ static void
 gist_indexsortbuild(GISTBuildState *state)
 {
 	IndexTuple	itup;
-	GistSortedBuildPageState *leafstate;
-	GistSortedBuildPageState *pagestate;
+	GistSortedBuildPageBatch *pagebatch;
 	Page		page;
 	Size page_max_num;
 
@@ -446,12 +444,12 @@ gist_indexsortbuild(GISTBuildState *state)
 	state->pages_allocated++;
 	state->pages_written++;
 
-	/* Allocate a temporary buffer for the first leaf page. */
-	leafstate = palloc0(GistSortedBuildPageStateRequiredSize(page_max_num));
-	leafstate->item_num_total = 0;
-	leafstate->page_max_num = page_max_num;
-	leafstate->pages[0] = page;
-	leafstate->parent = NULL;
+	/* Allocate a temporary buffer for the first leaf page batch. */
+	pagebatch = palloc0(GistSortedBuildPageBatchRequiredSize(page_max_num));
+	pagebatch->item_num_total = 0;
+	pagebatch->page_max_num = page_max_num;
+	pagebatch->pages[0] = page;
+	pagebatch->parent = NULL;
 	gistinitpage(page, F_LEAF);
 
 	/*
@@ -459,7 +457,7 @@ gist_indexsortbuild(GISTBuildState *state)
 	 */
 	while ((itup = tuplesort_getindextuple(state->sortstate, true)) != NULL)
 	{
-		gist_indexsortbuild_pagestate_add(state, leafstate, itup);
+		gist_indexsortbuild_pagebatch_add(state, pagebatch, itup);
 		MemoryContextReset(state->giststate->tempCxt);
 	}
 
@@ -469,89 +467,88 @@ gist_indexsortbuild(GISTBuildState *state)
 	 * Keep in mind that flush can build a new root.
 	 * If number of pages is > 1 then new root is required.
 	 */
-	pagestate = leafstate;
-	while (pagestate->parent != NULL || pagestate->current_page != 0)
+	while (pagebatch->parent != NULL || pagebatch->current_page != 0)
 	{
-		GistSortedBuildPageState *parent;
+		GistSortedBuildPageBatch *parent;
 
-		gist_indexsortbuild_pagestate_flush(state, pagestate);
-		parent = pagestate->parent;
-		for (Size i = 0; i < pagestate->page_max_num; i++)
-			if (pagestate->pages[i])
-				pfree(pagestate->pages[i]);
-		pfree(pagestate);
-		pagestate = parent;
+		gist_indexsortbuild_pagebatch_flush(state, pagebatch);
+		parent = pagebatch->parent;
+		for (Size i = 0; i < pagebatch->page_max_num; i++)
+			if (pagebatch->pages[i])
+				pfree(pagebatch->pages[i]);
+		pfree(pagebatch);
+		pagebatch = parent;
 	}
 
 	gist_indexsortbuild_flush_ready_pages(state);
 
 	/* Write out the root */
-	PageSetLSN(pagestate->pages[0], GistBuildLSN);
-	PageSetChecksumInplace(pagestate->pages[0], GIST_ROOT_BLKNO);
+	PageSetLSN(pagebatch->pages[0], GistBuildLSN);
+	PageSetChecksumInplace(pagebatch->pages[0], GIST_ROOT_BLKNO);
 	smgrwrite(RelationGetSmgr(state->indexrel), MAIN_FORKNUM, GIST_ROOT_BLKNO,
-			  pagestate->pages[0], true);
+			  pagebatch->pages[0], true);
 	if (RelationNeedsWAL(state->indexrel))
 		log_newpage(&state->indexrel->rd_node, MAIN_FORKNUM, GIST_ROOT_BLKNO,
-					pagestate->pages[0], true);
+					pagebatch->pages[0], true);
 
-	pfree(pagestate->pages[0]);
-	pfree(pagestate);
+	pfree(pagebatch->pages[0]);
+	pfree(pagebatch);
 }
 
 /*
- * Add tuple to a page. If the pages is full, write it out and re-initialize
- * a new page first.
+ * Add tuple to a page. If the pages is full, add new page to the batch.
+ * If the batch is full, split and write the pages.
  */
 static void
-gist_indexsortbuild_pagestate_add(GISTBuildState *state,
-								  GistSortedBuildPageState *pagestate,
+gist_indexsortbuild_pagebatch_add(GISTBuildState *state,
+								  GistSortedBuildPageBatch *pagebatch,
 								  IndexTuple itup)
 {
 	Size		sizeNeeded;
 
 	/* Does the tuple fit?
-	 * Tuple fits if total number of tuples is less than GistSortedBuildPageStateMaxItemNum
+	 * Tuple fits if total number of tuples is less than GistSortedBuildPageBatchMaxItemNum
 	 * and tuple fits into current page or new page can be added.
 	 * If not, flush */
 	sizeNeeded = IndexTupleSize(itup) + sizeof(ItemIdData) + state->freespace;
-	if (GistSortedBuildPageStateIsMaxItemNum(pagestate)
-		|| PageGetFreeSpace(pagestate->pages[pagestate->current_page]) < sizeNeeded)
+	if (GistSortedBuildPageBatchIsMaxItemNum(pagebatch)
+		|| PageGetFreeSpace(pagebatch->pages[pagebatch->current_page]) < sizeNeeded)
 	{
 		Page newPage;
-		Page old_page = pagestate->pages[pagestate->current_page];
+		Page old_page = pagebatch->pages[pagebatch->current_page];
 		uint16 old_page_flags = GistPageGetOpaque(old_page)->flags;
-		if (GistSortedBuildPageStateIsMaxItemNum(pagestate)
-			|| pagestate->current_page + 1 == pagestate->page_max_num)
+		if (GistSortedBuildPageBatchIsMaxItemNum(pagebatch)
+			|| pagebatch->current_page + 1 == pagebatch->page_max_num)
 		{
-			gist_indexsortbuild_pagestate_flush(state, pagestate);
+			gist_indexsortbuild_pagebatch_flush(state, pagebatch);
 		}
 		else
-			pagestate->current_page++;
+			pagebatch->current_page++;
 
-		if (pagestate->pages[pagestate->current_page] == NULL)
-			pagestate->pages[pagestate->current_page] = palloc(BLCKSZ);
+		if (pagebatch->pages[pagebatch->current_page] == NULL)
+			pagebatch->pages[pagebatch->current_page] = palloc(BLCKSZ);
 
-		newPage = pagestate->pages[pagestate->current_page];
+		newPage = pagebatch->pages[pagebatch->current_page];
 		gistinitpage(newPage, old_page_flags);
 	}
 
-	Assert(!GistSortedBuildPageStateIsMaxItemNum(pagestate));
-	pagestate->item_num_total++;
-	gistfillbuffer(pagestate->pages[pagestate->current_page], &itup, 1, InvalidOffsetNumber);
+	Assert(!GistSortedBuildPageBatchIsMaxItemNum(pagebatch));
+	pagebatch->item_num_total++;
+	gistfillbuffer(pagebatch->pages[pagebatch->current_page], &itup, 1, InvalidOffsetNumber);
 }
 
 static void
-gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
-									GistSortedBuildPageState *pagestate)
+gist_indexsortbuild_pagebatch_flush(GISTBuildState *state,
+									GistSortedBuildPageBatch *pagebatch)
 {
-	GistSortedBuildPageState *parent;
+	GistSortedBuildPageBatch *parent;
 	BlockNumber	blkno;
 	MemoryContext oldCtx;
 	IndexTuple union_tuple;
 	SplitedPageLayout *dist;
 	IndexTuple *itvec;
 	int vect_len;
-	bool isleaf = GistPageIsLeaf(pagestate->pages[0]);
+	bool isleaf = GistPageIsLeaf(pagebatch->pages[0]);
 
 	/* check once per whatever */
 	CHECK_FOR_INTERRUPTS();
@@ -559,20 +556,20 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 	oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
 
 	/* Get index tuples from first page */
-	itvec = gistextractpage(pagestate->pages[0], &vect_len);
-	if (pagestate->current_page > 0)
+	itvec = gistextractpage(pagebatch->pages[0], &vect_len);
+	if (pagebatch->current_page > 0)
 	{
 		/* Append tuples from each page */
-		for (int i = 1; i < pagestate->current_page + 1; i++)
+		for (int i = 1; i < pagebatch->current_page + 1; i++)
 		{
 			int len_local;
-			IndexTuple *itvec_local = gistextractpage(pagestate->pages[i], &len_local);
+			IndexTuple *itvec_local = gistextractpage(pagebatch->pages[i], &len_local);
 			itvec = gistjoinvector(itvec, &vect_len, itvec_local, len_local);
 			pfree(itvec_local);
 		}
 
 		/* Apply picksplit to list of all collected tuples */
-		dist = gistSplit(state->indexrel, pagestate->pages[0], itvec, vect_len, state->giststate);
+		dist = gistSplit(state->indexrel, pagebatch->pages[0], itvec, vect_len, state->giststate);
 	}
 	else
 	{
@@ -588,8 +585,8 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 	MemoryContextSwitchTo(oldCtx);
 
 	/* Reset page and item counters */
-	pagestate->current_page = 0;
-	pagestate->item_num_total = 0;
+	pagebatch->current_page = 0;
+	pagebatch->item_num_total = 0;
 
 	/* Create pages for all partitions in split result */
 	for (;dist != NULL; dist = dist->next)
@@ -634,27 +631,27 @@ gist_indexsortbuild_pagestate_flush(GISTBuildState *state,
 		* right-links form a chain through all the pages in the same level, the
 		* order doesn't matter.
 		*/
-		if (pagestate->prevpage_blkno)
-			GistPageGetOpaque(target)->rightlink = pagestate->prevpage_blkno;
-		pagestate->prevpage_blkno = blkno;
+		if (pagebatch->last_blkno)
+			GistPageGetOpaque(target)->rightlink = pagebatch->last_blkno;
+		pagebatch->last_blkno = blkno;
 
 		/*
 		* Insert the downlink to the parent page. If this was the root, create a
 		* new page as the parent, which becomes the new root.
 		*/
-		parent = pagestate->parent;
+		parent = pagebatch->parent;
 		if (parent == NULL)
 		{
-			parent = palloc0(GistSortedBuildPageStateRequiredSize(pagestate->page_max_num));
+			parent = palloc0(GistSortedBuildPageBatchRequiredSize(pagebatch->page_max_num));
 			parent->item_num_total = 0;
-			parent->page_max_num = pagestate->page_max_num;
+			parent->page_max_num = pagebatch->page_max_num;
 			parent->pages[0] = (Page) palloc(BLCKSZ);
 			parent->parent = NULL;
 			gistinitpage(parent->pages[0], 0);
 
-			pagestate->parent = parent;
+			pagebatch->parent = parent;
 		}
-		gist_indexsortbuild_pagestate_add(state, parent, union_tuple);
+		gist_indexsortbuild_pagebatch_add(state, parent, union_tuple);
 	}
 }
 
