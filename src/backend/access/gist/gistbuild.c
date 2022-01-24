@@ -132,7 +132,7 @@ typedef struct GistSortedBuildLevelState
 	BlockNumber last_blkno;
 	struct GistSortedBuildLevelState *parent;	/* Upper level, if any */
 	uint16 item_num_total;
-	Size page_max_num;
+	uint16 page_max_num;
 	Page pages[FLEXIBLE_ARRAY_MEMBER];
 } GistSortedBuildLevelState;
 
@@ -426,7 +426,15 @@ gist_indexsortbuild(GISTBuildState *state)
 	Size page_max_num;
 
 	/* Number of pages to collect before splitting */
-	page_max_num = GistSortedBuildPageBufferSize;
+	page_max_num = GIST_PAGE_BUFFER_SIZE_USE_GUC;
+	{
+		GiSTOptions *options = (GiSTOptions *) state->indexrel->rd_options;
+		if (options)
+			page_max_num = options->page_buffer_size;
+	}
+	if (page_max_num == GIST_PAGE_BUFFER_SIZE_USE_GUC)
+		page_max_num = GistSortedBuildPageBufferSize;
+
 	if (page_max_num > 1)
 		state->freespace = 0; /* collected tuples will all be split between new pages */
 

@@ -3598,7 +3598,7 @@ static struct config_int ConfigureNamesInt[] =
 			0
 		},
 		&GistSortedBuildPageBufferSize,
-		8, 1, INT_MAX,
+		8, 1, GIST_SORTED_BUILD_MAX_PAGE_BUFFER_SIZE,
 		NULL, NULL, NULL
 	},
 

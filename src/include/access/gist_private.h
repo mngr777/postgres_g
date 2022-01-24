@@ -396,6 +396,7 @@ typedef struct GiSTOptions
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
 	int			fillfactor;		/* page fill factor in percent (0..100) */
 	GistOptBufferingMode buffering_mode;	/* buffering build mode */
+	int page_buffer_size; /* sorted build: number of pages to collect before applying picksplit */
 } GiSTOptions;
 
 /* gist.c */
@@ -477,6 +478,7 @@ extern void gistadjustmembers(Oid opfamilyoid,
 
 #define GIST_MIN_FILLFACTOR			10
 #define GIST_DEFAULT_FILLFACTOR		90
+#define GIST_PAGE_BUFFER_SIZE_USE_GUC	0
 
 extern bytea *gistoptions(Datum reloptions, bool validate);
 extern bool gistproperty(Oid index_oid, int attno,

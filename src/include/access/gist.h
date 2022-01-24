@@ -186,6 +186,8 @@ typedef struct GISTENTRY
 #define GistPageGetNSN(page) ( PageXLogRecPtrGet(GistPageGetOpaque(page)->nsn))
 #define GistPageSetNSN(page, val) ( PageXLogRecPtrSet(GistPageGetOpaque(page)->nsn, val))
 
+#define GIST_SORTED_BUILD_MAX_PAGE_BUFFER_SIZE	PG_UINT16_MAX
+
 extern int GistSortedBuildPageBufferSize;
 
 /*

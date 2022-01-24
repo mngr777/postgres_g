@@ -207,6 +207,15 @@ static relopt_int intRelOpts[] =
 	},
 	{
 		{
+			"page_buffer_size",
+			"Number of index pages to collect before splitting in sorted build",
+			RELOPT_KIND_GIST,
+			ShareUpdateExclusiveLock
+		},
+		GIST_PAGE_BUFFER_SIZE_USE_GUC, GIST_PAGE_BUFFER_SIZE_USE_GUC, GIST_SORTED_BUILD_MAX_PAGE_BUFFER_SIZE
+	},
+	{
+		{
 			"fillfactor",
 			"Packs spgist index pages only to this percentage",
 			RELOPT_KIND_SPGIST,
