@@ -423,11 +423,11 @@ create downlinks and internal pages as we go. This builds the index from the
 bottom up, similar to how B-tree index build works.
 
 The sorted method is used if the operator classes for all columns have a
-'sortsupport' defined. Otherwise, we resort to the inserting tuples one by one
+"sortsupport" defined. Otherwise, we fall back on inserting tuples one by one
 with optional buffering.
 
 Sorting GiST build requires good linearization of the sort opclass. This is not
-always the case in multidimensional data. To fight the anomalies, we buffer
+always the case in multidimensional data. To tackle the anomalies, we buffer
 index tuples and apply picksplit function that can be multidimension-aware. The
 number of pages of tuples to collect before picksplit is applied can be set
 using "gist_sorted_build_page_buffer_size" GUC parameter or "page_buffer_size"
