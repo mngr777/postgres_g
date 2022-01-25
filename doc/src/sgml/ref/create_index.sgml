@@ -462,7 +462,7 @@ CREATE [ UNIQUE ] INDEX [ CONCURRENTLY ] [ [ IF NOT EXISTS ] <replaceable class=
    </variablelist>
 
    <para>
-    GiST indexes additionally accept this parameter:
+    GiST indexes additionally accept this parameters:
    </para>
 
    <variablelist>
@@ -485,6 +485,20 @@ CREATE [ UNIQUE ] INDEX [ CONCURRENTLY ] [ [ IF NOT EXISTS ] <replaceable class=
      buffered build unless <literal>buffering=ON</literal> is specified.
     </para>
     </listitem>
+   </varlistentry>
+   <varlistentry id="index-reloption-page-buffer-size" xreflabel="page_buffer_size">
+     <term><literal>page_buffer_size</literal> (<type>integer</type>)
+       <indexterm>
+         <primary><varname>page_buffer_size</varname> storage parameter</primary>
+       </indexterm>
+     </term>
+     <listitem>
+     <para>
+       Sets the number of pages to be collected in sorted build method described
+       in <xref linkend="gist-buffering-build"/> before applying
+       <function>picksplit</function> function.
+     </para>
+     </listitem>
    </varlistentry>
    </variablelist>
 

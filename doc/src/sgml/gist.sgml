@@ -1211,6 +1211,17 @@ my_sortsupport(PG_FUNCTION_ARGS)
   </para>
 
   <para>
+    Sorting GiST build requires good linearization of the sort opclass. This is
+    not always the case in multidimensional data. To tackle the anomalies, we
+    buffer index tuples and apply <function>picksplit</function> function that
+    can be multidimension-aware. The number of pages of tuples to collect before
+    <function>picksplit</function> is applied can be set using
+    "gist_sorted_build_page_buffer_size" <acronym>GUC</acronym> parameter or
+    <xref linkend="index-reloption-page-buffer-size"/> index parameter (default
+    is 8 pages).
+  </para>
+
+  <para>
    The buffered method works by not inserting tuples directly into the index
    right away.  It can dramatically reduce the amount of random I/O needed
    for non-ordered data sets.  For well-ordered data sets the benefit is
