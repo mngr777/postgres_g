@@ -478,7 +478,6 @@ extern void gistadjustmembers(Oid opfamilyoid,
 
 #define GIST_MIN_FILLFACTOR			10
 #define GIST_DEFAULT_FILLFACTOR		90
-#define GIST_PAGE_BUFFER_SIZE_USE_GUC	0
 
 extern bytea *gistoptions(Datum reloptions, bool validate);
 extern bool gistproperty(Oid index_oid, int attno,

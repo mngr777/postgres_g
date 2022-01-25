@@ -59,7 +59,7 @@
  */
 #define BUFFERING_MODE_TUPLE_SIZE_STATS_TARGET 4096
 
-/**
+/*
  * Number of pages to collect during sorted build before applying split operation
  */
 int GistSortedBuildPageBufferSize = 8;
@@ -426,13 +426,13 @@ gist_indexsortbuild(GISTBuildState *state)
 	Size page_max_num;
 
 	/* Number of pages to collect before splitting */
-	page_max_num = GIST_PAGE_BUFFER_SIZE_USE_GUC;
+	page_max_num = 0;
 	{
 		GiSTOptions *options = (GiSTOptions *) state->indexrel->rd_options;
-		if (options)
+		if (options && options->page_buffer_size > 0)
 			page_max_num = options->page_buffer_size;
 	}
-	if (page_max_num == GIST_PAGE_BUFFER_SIZE_USE_GUC)
+	if (page_max_num == 0)
 		page_max_num = GistSortedBuildPageBufferSize;
 
 	if (page_max_num > 1)
@@ -481,7 +481,7 @@ gist_indexsortbuild(GISTBuildState *state)
 
 		gist_indexsortbuild_levelstate_flush(state, levelstate);
 		parent = levelstate->parent;
-		for (Size i = 0; i < levelstate->page_max_num; i++)
+		for (int i = 0; i < levelstate->page_max_num; i++)
 			if (levelstate->pages[i])
 				pfree(levelstate->pages[i]);
 		pfree(levelstate);
@@ -504,7 +504,7 @@ gist_indexsortbuild(GISTBuildState *state)
 }
 
 /*
- * Add tuple to a page. If the pages is full, write it out and re-initialize
+ * Add tuple to a page. If the pages are full, write them out and re-initialize
  * a new page first.
  */
 static void
@@ -514,10 +514,7 @@ gist_indexsortbuild_levelstate_add(GISTBuildState *state,
 {
 	Size		sizeNeeded;
 
-	/* Does the tuple fit?
-	 * Tuple fits if total number of tuples is less than GistSortedBuildLevelStateMaxItemNum
-	 * and tuple fits into current page or new page can be added.
-	 * If not, flush */
+	/* Check if tuple can be added to the current page */
 	sizeNeeded = IndexTupleSize(itup) + sizeof(ItemIdData) + state->freespace;
 	if (GistSortedBuildLevelStateIsMaxItemNum(levelstate)
 		|| PageGetFreeSpace(levelstate->pages[levelstate->current_page]) < sizeNeeded)
@@ -558,7 +555,6 @@ gist_indexsortbuild_levelstate_flush(GISTBuildState *state,
 	int vect_len;
 	bool isleaf = GistPageIsLeaf(levelstate->pages[0]);
 
-	/* check once per whatever */
 	CHECK_FOR_INTERRUPTS();
 
 	oldCtx = MemoryContextSwitchTo(state->giststate->tempCxt);
@@ -599,6 +595,9 @@ gist_indexsortbuild_levelstate_flush(GISTBuildState *state,
 	/* Create pages for all partitions in split result */
 	for (;dist != NULL; dist = dist->next)
 	{
+		/* check once per whatever */
+		CHECK_FOR_INTERRUPTS();
+
 		/* Create page and copy data */
 		char *data = (char *) (dist->list);
 		Page target = palloc0(BLCKSZ);
